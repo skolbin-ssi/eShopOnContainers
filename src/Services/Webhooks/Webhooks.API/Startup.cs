@@ -1,3 +1,6 @@
+using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.Authentication.OpenIdConnect;
+
 namespace Webhooks.API;
 public class Startup
 {
@@ -88,7 +91,7 @@ public class Startup
     }
 }
 
-static class CustomExtensionMethods
+internal static class CustomExtensionMethods
 {
     public static IServiceCollection AddAppInsight(this IServiceCollection services, IConfiguration configuration)
     {
@@ -171,53 +174,50 @@ static class CustomExtensionMethods
     public static IServiceCollection AddEventBus(this IServiceCollection services, IConfiguration configuration)
     {
         if (configuration.GetValue<bool>("AzureServiceBusEnabled"))
+        {
+            services.AddSingleton<IEventBus, EventBusServiceBus>(sp =>
             {
-                services.AddSingleton<IEventBus, EventBusServiceBus>(sp =>
-                {
-                    var serviceBusPersisterConnection = sp.GetRequiredService<IServiceBusPersisterConnection>();
-                    var iLifetimeScope = sp.GetRequiredService<ILifetimeScope>();
-                    var logger = sp.GetRequiredService<ILogger<EventBusServiceBus>>();
-                    var eventBusSubcriptionsManager = sp.GetRequiredService<IEventBusSubscriptionsManager>();
-                    string subscriptionName = configuration["SubscriptionClientName"];
+                var serviceBusPersisterConnection = sp.GetRequiredService<IServiceBusPersisterConnection>();
+                var iLifetimeScope = sp.GetRequiredService<ILifetimeScope>();
+                var logger = sp.GetRequiredService<ILogger<EventBusServiceBus>>();
+                var eventBusSubscriptionManager = sp.GetRequiredService<IEventBusSubscriptionsManager>();
+                string subscriptionName = configuration["SubscriptionClientName"];
 
-                    return new EventBusServiceBus(serviceBusPersisterConnection, logger,
-                        eventBusSubcriptionsManager, iLifetimeScope, subscriptionName);
-                });
+                return new EventBusServiceBus(serviceBusPersisterConnection, logger,
+                    eventBusSubscriptionManager, iLifetimeScope, subscriptionName);
+            });
 
-            }
-            else
+        }
+        else
+        {
+            services.AddSingleton<IEventBus, EventBusRabbitMQ>(sp =>
             {
-                services.AddSingleton<IEventBus, EventBusRabbitMQ>(sp =>
+                var subscriptionClientName = configuration["SubscriptionClientName"];
+                var rabbitMQPersistentConnection = sp.GetRequiredService<IRabbitMQPersistentConnection>();
+                var iLifetimeScope = sp.GetRequiredService<ILifetimeScope>();
+                var logger = sp.GetRequiredService<ILogger<EventBusRabbitMQ>>();
+                var eventBusSubscriptionManager = sp.GetRequiredService<IEventBusSubscriptionsManager>();
+
+                var retryCount = 5;
+                if (!string.IsNullOrEmpty(configuration["EventBusRetryCount"]))
                 {
-                    var subscriptionClientName = configuration["SubscriptionClientName"];
-                    var rabbitMQPersistentConnection = sp.GetRequiredService<IRabbitMQPersistentConnection>();
-                    var iLifetimeScope = sp.GetRequiredService<ILifetimeScope>();
-                    var logger = sp.GetRequiredService<ILogger<EventBusRabbitMQ>>();
-                    var eventBusSubcriptionsManager = sp.GetRequiredService<IEventBusSubscriptionsManager>();
+                    retryCount = int.Parse(configuration["EventBusRetryCount"]);
+                }
 
-                    var retryCount = 5;
-                    if (!string.IsNullOrEmpty(configuration["EventBusRetryCount"]))
-                    {
-                        retryCount = int.Parse(configuration["EventBusRetryCount"]);
-                    }
+                return new EventBusRabbitMQ(rabbitMQPersistentConnection, logger, iLifetimeScope, eventBusSubscriptionManager, subscriptionClientName, retryCount);
+            });
+        }
 
-                    return new EventBusRabbitMQ(rabbitMQPersistentConnection, logger, iLifetimeScope, eventBusSubcriptionsManager, subscriptionClientName, retryCount);
-                });
-            }
+        services.AddSingleton<IEventBusSubscriptionsManager, InMemoryEventBusSubscriptionsManager>();
+        services.AddTransient<ProductPriceChangedIntegrationEventHandler>();
+        services.AddTransient<OrderStatusChangedToShippedIntegrationEventHandler>();
+        services.AddTransient<OrderStatusChangedToPaidIntegrationEventHandler>();
 
-            services.AddSingleton<IEventBusSubscriptionsManager, InMemoryEventBusSubscriptionsManager>();
-            services.AddTransient<ProductPriceChangedIntegrationEventHandler>();
-            services.AddTransient<OrderStatusChangedToShippedIntegrationEventHandler>();
-            services.AddTransient<OrderStatusChangedToPaidIntegrationEventHandler>();
-
-            return services;
+        return services;
     }
 
     public static IServiceCollection AddCustomHealthCheck(this IServiceCollection services, IConfiguration configuration)
     {
-        var accountName = configuration.GetValue<string>("AzureStorageAccountName");
-        var accountKey = configuration.GetValue<string>("AzureStorageAccountKey");
-
         var hcBuilder = services.AddHealthChecks();
 
         hcBuilder
@@ -306,8 +306,23 @@ static class CustomExtensionMethods
             options.Authority = identityUrl;
             options.RequireHttpsMetadata = false;
             options.Audience = "webhooks";
+            options.TokenValidationParameters.ValidateAudience = false;
         });
 
+        return services;
+    }
+
+
+    public static IServiceCollection AddCustomAuthorization(this IServiceCollection services, IConfiguration configuration)
+    {
+        services.AddAuthorization(options =>
+        {
+            options.AddPolicy("ApiScope", policy =>
+            {
+                policy.RequireAuthenticatedUser();
+                policy.RequireClaim("scope", "webhooks");
+            });
+        });
         return services;
     }
 }

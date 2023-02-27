@@ -1,3 +1,6 @@
+using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.Authentication.OpenIdConnect;
+
 namespace Microsoft.eShopOnContainers.Services.Basket.API;
 public class Startup
 {
@@ -214,16 +217,20 @@ public class Startup
 
         var identityUrl = Configuration.GetValue<string>("IdentityUrl");
 
-        services.AddAuthentication(options =>
-        {
-            options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
-            options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
-
-        }).AddJwtBearer(options =>
+        services.AddAuthentication("Bearer").AddJwtBearer(options =>
         {
             options.Authority = identityUrl;
             options.RequireHttpsMetadata = false;
             options.Audience = "basket";
+            options.TokenValidationParameters.ValidateAudience = false;
+        });
+        services.AddAuthorization(options =>
+        {
+            options.AddPolicy("ApiScope", policy =>
+            {
+                policy.RequireAuthenticatedUser();
+                policy.RequireClaim("scope", "basket");
+            });
         });
     }
 
@@ -281,41 +288,5 @@ public class Startup
 
         eventBus.Subscribe<ProductPriceChangedIntegrationEvent, ProductPriceChangedIntegrationEventHandler>();
         eventBus.Subscribe<OrderStartedIntegrationEvent, OrderStartedIntegrationEventHandler>();
-    }
-}
-
-public static class CustomExtensionMethods
-{
-    public static IServiceCollection AddCustomHealthCheck(this IServiceCollection services, IConfiguration configuration)
-    {
-        var hcBuilder = services.AddHealthChecks();
-
-        hcBuilder.AddCheck("self", () => HealthCheckResult.Healthy());
-
-        hcBuilder
-            .AddRedis(
-                configuration["ConnectionString"],
-                name: "redis-check",
-                tags: new string[] { "redis" });
-
-        if (configuration.GetValue<bool>("AzureServiceBusEnabled"))
-        {
-            hcBuilder
-                .AddAzureServiceBusTopic(
-                    configuration["EventBusConnection"],
-                    topicName: "eshop_event_bus",
-                    name: "basket-servicebus-check",
-                    tags: new string[] { "servicebus" });
-        }
-        else
-        {
-            hcBuilder
-                .AddRabbitMQ(
-                    $"amqp://{configuration["EventBusConnection"]}",
-                    name: "basket-rabbitmqbus-check",
-                    tags: new string[] { "rabbitmqbus" });
-        }
-
-        return services;
     }
 }
